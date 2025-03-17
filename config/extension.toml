@@ -1,7 +1,7 @@
 [package]
 version = "1.0.0"
-title = "Motion Extension"
-description = "Motion Extension for Isaac Sim"
+title = "Motion Kinematics Extension"
+description = "Motion Kinematics Extension for Isaac Sim"
 
 [[python.module]]
-name = "motion.extension"
+name = "motion.kinematics"
