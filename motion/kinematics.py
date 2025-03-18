@@ -92,26 +92,10 @@ class MotionKinematicsExtension(omni.ext.IExt):
                                         assert sid
                                         assert int(count) == len(body)
 
-                                        data = json.loads(body)
+                                        self.kinematics_pose = json.loads(body)
                                         print(
-                                            "[MotionKinematicsExtension] Extension server: {}".format(
-                                                data
-                                            )
-                                        )
-                                        self.position = np.array(
-                                            (
-                                                data["position"]["x"],
-                                                data["position"]["y"],
-                                                data["position"]["z"],
-                                                data["orientation"]["x"],
-                                                data["orientation"]["y"],
-                                                data["orientation"]["z"],
-                                                data["orientation"]["w"],
-                                            )
-                                        )
-                                        print(
-                                            "[MotionKinematicsExtension] Extension position: {}".format(
-                                                self.position
+                                            "[MotionKinematicsExtension] Extension server pose: {}".format(
+                                                self.kinematics_pose
                                             )
                                         )
 
@@ -129,8 +113,8 @@ class MotionKinematicsExtension(omni.ext.IExt):
             finally:
                 print("[MotionKinematicsExtension] Extension server exit")
 
-        self.position = None
-        self.step_position = None
+        self.kinematics_pose = None
+        self.kinematics_step = None
 
         self.running = True
         loop = asyncio.get_event_loop()
@@ -144,22 +128,63 @@ class MotionKinematicsExtension(omni.ext.IExt):
         #    .create_subscription_to_pop(self.step, name="StepFunction")
         # )
 
-    def step(self, delta: float):
-        print("[MotionKinematicsExtension] Extension step {}".format(delta))
+    def delta(self):
+        print(
+            "[MotionKinematicsExtension] Extension delta: {} {}",
+            self.kinematics_pose,
+            self.kinematics_step,
+        )
 
-        if self.position is not None:
-            value = self.position
-            if self.step_position is not None:
-                delta_p = value[:3] - value[:3]
-                delta_r = (
-                    R.from_quat(value[3:]) * R.from_quat(value[3:]).inv()
-                ).as_quat()
-                print(
-                    "[MotionKinematicsExtension] Extension step {} {} {}".format(
-                        delta_p, delta_r, delta
+        delta_p, delta_r = np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0])
+        if self.kinematics_pose is not None:
+            value = self.kinematics_pose
+            if (
+                self.kinematics_step is not None
+                and self.kinematics_step["channel"] == value["channel"]
+            ):
+                delta_p = np.array(
+                    (
+                        value["position"]["x"],
+                        value["position"]["y"],
+                        value["position"]["z"],
+                    )
+                ) - np.array(
+                    (
+                        self.kinematics_step["position"]["x"],
+                        self.kinematics_step["position"]["y"],
+                        self.kinematics_step["position"]["z"],
                     )
                 )
-            self.step_position = value
+
+                delta_r = (
+                    R.from_quat(
+                        np.array(
+                            (
+                                value["orientation"]["x"],
+                                value["orientation"]["y"],
+                                value["orientation"]["z"],
+                                value["orientation"]["w"],
+                            )
+                        )
+                    )
+                    * R.from_quat(
+                        np.array(
+                            (
+                                self.kinematics_step["orientation"]["x"],
+                                self.kinematics_step["orientation"]["y"],
+                                self.kinematics_step["orientation"]["z"],
+                                self.kinematics_step["orientation"]["w"],
+                            )
+                        )
+                    ).inv()
+                ).as_quat()
+                print(
+                    "[MotionKinematicsExtension] Extension delta: {} {}".format(
+                        delta_p, delta_r
+                    )
+                )
+            self.kinematics_step = value
+        return delta_p, delta_r
 
     def on_shutdown(self):
         async def g(self):
