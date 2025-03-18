@@ -1,12 +1,18 @@
+import asyncio
+import json
+import os
+
+import numpy as np
 import omni.ext
-import omni.usd
 import omni.kit.app
+import omni.usd
+import toml
+import websockets
 from omni.isaac.core import World
 from omni.isaac.core.articulations import Articulation
-from omni.isaac.dynamic_control import _dynamic_control
+from omni.isaac.core.prims import XFormPrim
+from omni.isaac.universal_robots.kinematics_solver import KinematicsSolver
 from scipy.spatial.transform import Rotation as R
-import asyncio, websockets, toml, json, os
-import numpy as np
 
 
 class MotionKinematicsExtension(omni.ext.IExt):
@@ -14,10 +20,11 @@ class MotionKinematicsExtension(omni.ext.IExt):
         super().__init__()
 
         self.config = {
-            "subject": "subject.pose",
+            "base": None,
             "effector": None,
             "articulation": None,
             "server": "ws://localhost:8081",
+            "subject": "subject.pose",
         }
 
         try:
@@ -28,6 +35,9 @@ class MotionKinematicsExtension(omni.ext.IExt):
             print("[MotionKinematicsExtension] Extension config: {}".format(config))
             config = toml.load(config)
             print("[MotionKinematicsExtension] Extension config: {}".format(config))
+            self.config["base"] = (
+                config.get("base", self.config["base"]) or self.config["base"]
+            )
             self.config["effector"] = (
                 config.get("effector", self.config["effector"])
                 or self.config["effector"]
@@ -39,9 +49,18 @@ class MotionKinematicsExtension(omni.ext.IExt):
             self.config["server"] = (
                 config.get("server", self.config["server"]) or self.config["server"]
             )
+            self.config["subject"] = (
+                config.get("subject", self.config["subject"]) or self.config["subject"]
+            )
         except Exception as e:
             print("[MotionKinematicsExtension] Extension config: {}".format(e))
+
+        assert self.config["base"]
+        assert self.config["effector"]
+        assert self.config["articulation"]
         print("[MotionKinematicsExtension] Extension config: {}".format(self.config))
+
+        self.kinematics_delta = None
 
     def on_startup(self, ext_id):
         async def f(self):
@@ -56,62 +75,109 @@ class MotionKinematicsExtension(omni.ext.IExt):
 
             if self.config["articulation"]:
                 self.articulation = Articulation(self.config["articulation"])
+                self.articulation.initialize()
+                # while not self.articulation.handles_initialized:
+                #    print("[MotionKinematicsExtension] Extension articulation wait")
+                #    await asyncio.sleep(1)
+
+                self.controller = self.articulation.get_articulation_controller()
+                self.solver = KinematicsSolver(
+                    self.articulation, self.config["effector"]
+                )
                 print(
-                    "[MotionKinematicsExtension] Extension articulation {} ({})".format(
-                        self.articulation, self.articulation.dof_names
+                    "[MotionKinematicsExtension] Extension articulation {} ({}) {} {}".format(
+                        self.articulation,
+                        self.articulation.dof_names,
+                        self.controller,
+                        self.solver,
                     )
                 )
 
         async def g(self):
-            try:
-                while self.running:
-                    try:
-                        async with websockets.connect(self.config["server"]) as ws:
-                            await ws.send("SUB {} 1\r\n".format(self.config["subject"]))
-                            while self.running:
-                                try:
-                                    response = await asyncio.wait_for(
-                                        ws.recv(), timeout=1.0
-                                    )
-                                    print(
-                                        "[MotionKinematicsExtension] Extension server: {}".format(
-                                            response
+            async def value_stream(self):
+                try:
+                    while self.running:
+                        try:
+                            async with websockets.connect(self.config["server"]) as ws:
+                                await ws.send(
+                                    "SUB {} 1\r\n".format(self.config["subject"])
+                                )
+                                while self.running:
+                                    try:
+                                        response = await asyncio.wait_for(
+                                            ws.recv(), timeout=1.0
                                         )
-                                    )
-                                    head, body = response.split(b"\r\n", 1)
-                                    if head.startswith(b"MSG "):
-                                        assert body.endswith(b"\r\n")
-                                        body = body[:-2]
-
-                                        op, sub, sid, count = head.split(b" ", 3)
-                                        assert op == b"MSG"
-                                        assert sub
-                                        assert sid
-                                        assert int(count) == len(body)
-
-                                        self.kinematics_pose = json.loads(body)
                                         print(
-                                            "[MotionKinematicsExtension] Extension server pose: {}".format(
-                                                self.kinematics_pose
+                                            "[MotionKinematicsExtension] Extension server value: {}".format(
+                                                response
                                             )
                                         )
+                                        head, body = response.split(b"\r\n", 1)
+                                        if head.startswith(b"MSG "):
+                                            assert body.endswith(b"\r\n")
+                                            body = body[:-2]
 
-                                except asyncio.TimeoutError:
-                                    pass
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        print(
-                            "[MotionKinematicsExtension] Extension server: {}".format(e)
-                        )
-                        await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                print("[MotionKinematicsExtension] Extension server cancel")
-            finally:
-                print("[MotionKinematicsExtension] Extension server exit")
+                                            op, sub, sid, count = head.split(b" ", 3)
+                                            assert op == b"MSG"
+                                            assert sub
+                                            assert sid
+                                            assert int(count) == len(body)
 
-        self.kinematics_pose = None
-        self.kinematics_step = None
+                                            pose = json.loads(body)
+                                            position = np.array(
+                                                (
+                                                    pose["position"]["x"],
+                                                    pose["position"]["y"],
+                                                    pose["position"]["z"],
+                                                )
+                                            )
+                                            orientation = np.array(
+                                                (
+                                                    pose["orientation"]["x"],
+                                                    pose["orientation"]["y"],
+                                                    pose["orientation"]["z"],
+                                                    pose["orientation"]["w"],
+                                                )
+                                            )
+                                            print(
+                                                "[MotionKinematicsExtension] Extension server value: {}/{}".format(
+                                                    position, orientation
+                                                )
+                                            )
+                                            yield position, orientation
+
+                                    except asyncio.TimeoutError:
+                                        pass
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            print(
+                                "[MotionKinematicsExtension] Extension server value: {}".format(
+                                    e
+                                )
+                            )
+                            await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    print("[MotionKinematicsExtension] Extension server value cancel")
+                finally:
+                    print("[MotionKinematicsExtension] Extension server value exit")
+
+            async def delta_stream(stream):
+                prev = None
+                async for item in stream:
+                    if prev is not None:
+                        yield (prev, item)
+                    prev = item
+
+            async for value in value_stream(self):
+                print(
+                    "[MotionKinematicsExtension] Extension server value: {}".format(
+                        value
+                    )
+                )
+                self.kinematics_delta = value
+
+        self.kinematics_delta = None
 
         self.running = True
         loop = asyncio.get_event_loop()
@@ -134,6 +200,8 @@ class MotionKinematicsExtension(omni.ext.IExt):
                         world, world.stage
                     )
                 )
+                if world.physics_callback_exists("on_physics_step"):
+                    world.remove_physics_callback("on_physics_step")
                 world.add_physics_callback("on_physics_step", self.on_physics_step)
                 self.subscription = None
                 return
@@ -141,69 +209,66 @@ class MotionKinematicsExtension(omni.ext.IExt):
             print("[MotionKinematicsExtension] Extension world: {}".format(e))
 
     def on_physics_step(self, step_size):
-        print("[MotionKinematicsExtension] Extension step: {}".format(step_size))
-
-    def delta(self):
-        print(
-            "[MotionKinematicsExtension] Extension delta: {} {}",
-            self.kinematics_pose,
-            self.kinematics_step,
-        )
-
-        delta_p, delta_r = np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0])
-        if self.kinematics_pose is not None:
-            value = self.kinematics_pose
-            if (
-                self.kinematics_step is not None
-                and self.kinematics_step["channel"] == value["channel"]
-            ):
-                delta_p = np.array(
-                    (
-                        value["position"]["x"],
-                        value["position"]["y"],
-                        value["position"]["z"],
-                    )
-                ) - np.array(
-                    (
-                        self.kinematics_step["position"]["x"],
-                        self.kinematics_step["position"]["y"],
-                        self.kinematics_step["position"]["z"],
-                    )
+        delta, self.kinematics_delta = self.kinematics_delta, None
+        if delta is not None:
+            print(
+                "[MotionKinematicsExtension] Extension physics: {} {}".format(
+                    delta, step_size
                 )
+            )
+            delta_p, delta_o = delta
 
-                delta_r = (
-                    R.from_quat(
-                        np.array(
-                            (
-                                value["orientation"]["x"],
-                                value["orientation"]["y"],
-                                value["orientation"]["z"],
-                                value["orientation"]["w"],
-                            )
-                        )
-                    )
-                    * R.from_quat(
-                        np.array(
-                            (
-                                self.kinematics_step["orientation"]["x"],
-                                self.kinematics_step["orientation"]["y"],
-                                self.kinematics_step["orientation"]["z"],
-                                self.kinematics_step["orientation"]["w"],
-                            )
-                        )
-                    ).inv()
-                ).as_quat()
-                print(
-                    "[MotionKinematicsExtension] Extension delta: {} {}".format(
-                        delta_p, delta_r
-                    )
+            position, orientation = XFormPrim(self.config["base"]).get_world_pose()
+            print(
+                "[MotionKinematicsExtension] Extension reference position/orientation: {} {}".format(
+                    position, orientation
                 )
-            self.kinematics_step = value
-        return delta_p, delta_r
+            )
+            base_p = position
+            base_o = np.array(
+                (orientation[1], orientation[2], orientation[3], orientation[0])
+            )
+
+            # Convert base orientation to Rotation object
+            base_r = R.from_quat(base_o)
+            # Convert delta orientation to Rotation object
+            delta_r = R.from_quat(delta_o)
+            # Compose rotations (apply delta after base)
+            pose_r = base_r * delta_r
+
+            # Rotate delta_p into base frame, then add base_p
+            pose_p = base_p + base_r.apply(delta_p)
+            # Get composed orientation as [x, y, z, w]
+            pose_o = pose_r.as_quat()
+
+            print(
+                "[MotionKinematicsExtension] Extension pose: {} {}".format(
+                    pose_p, pose_o
+                )
+            )
+
+            target_position = pose_p
+            target_orientation = np.array((pose_o[3], pose_o[0], pose_o[1], pose_o[2]))
+
+            kinematics, success = self.solver.compute_inverse_kinematics(
+                target_position=target_position, target_orientation=target_orientation
+            )
+            print(
+                "[MotionKinematicsExtension] Extension kinematics: {} {}".format(
+                    kinematics, success
+                )
+            )
+
+            if success:
+                self.controller.apply_action(kinematics)
+
+        return
 
     def on_shutdown(self):
 
         self.subscription = None
+
+        self.kinematics_delta = None
 
         async def g(self):
             if getattr(self, "server_task") and self.server_task:
