@@ -15,6 +15,7 @@ class MotionKinematicsExtension(omni.ext.IExt):
         super().__init__()
 
         self.config = {
+            "subject": "subject.pose",
             "effector": None,
             "articulation": None,
             "server": "ws://localhost:8081",
@@ -69,7 +70,7 @@ class MotionKinematicsExtension(omni.ext.IExt):
                 while self.running:
                     try:
                         async with websockets.connect(self.config["server"]) as ws:
-                            await ws.send("SUB test.subject 1\r\n")
+                            await ws.send("SUB {} 1\r\n".format(self.config["subject"]))
                             while self.running:
                                 try:
                                     response = await asyncio.wait_for(
@@ -119,7 +120,9 @@ class MotionKinematicsExtension(omni.ext.IExt):
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
-                        print("[MotionKinematicsExtension] Extension server: {}".format(e))
+                        print(
+                            "[MotionKinematicsExtension] Extension server: {}".format(e)
+                        )
                         await asyncio.sleep(1)
             except asyncio.CancelledError:
                 print("[MotionKinematicsExtension] Extension server cancel")
@@ -167,7 +170,11 @@ class MotionKinematicsExtension(omni.ext.IExt):
                 except asyncio.CancelledError:
                     print("[MotionKinematicsExtension] Extension server cancel")
                 except Exception as e:
-                    print("[MotionKinematicsExtension] Extension server exception {}".format(e))
+                    print(
+                        "[MotionKinematicsExtension] Extension server exception {}".format(
+                            e
+                        )
+                    )
 
         self.running = False
         loop = asyncio.get_event_loop()
