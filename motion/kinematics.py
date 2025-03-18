@@ -1,13 +1,12 @@
 import omni.ext
 import omni.usd
 import omni.kit.app
-from omni.isaac.sensor import Camera
+from omni.isaac.core import World
 from omni.isaac.core.articulations import Articulation
 from omni.isaac.dynamic_control import _dynamic_control
 from scipy.spatial.transform import Rotation as R
-import asyncio, websockets, toml, json, os, socket, io
+import asyncio, websockets, toml, json, os
 import numpy as np
-import PIL.Image
 
 
 class MotionKinematicsExtension(omni.ext.IExt):
@@ -43,8 +42,6 @@ class MotionKinematicsExtension(omni.ext.IExt):
         except Exception as e:
             print("[MotionKinematicsExtension] Extension config: {}".format(e))
         print("[MotionKinematicsExtension] Extension config: {}".format(self.config))
-
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def on_startup(self, ext_id):
         async def f(self):
@@ -122,11 +119,29 @@ class MotionKinematicsExtension(omni.ext.IExt):
         self.server_task = loop.create_task(g(self))
         print("[MotionKinematicsExtension] Extension startup")
 
-        # self.subscription = (
-        #    omni.kit.app.get_app()
-        #    .get_update_event_stream()
-        #    .create_subscription_to_pop(self.step, name="StepFunction")
-        # )
+        self.subscription = (
+            omni.kit.app.get_app()
+            .get_update_event_stream()
+            .create_subscription_to_pop(self.world_callback, name="world_callback")
+        )
+
+    def world_callback(self, e):
+        try:
+            world = World.instance()
+            if world and world.stage:
+                print(
+                    "[MotionKinematicsExtension] Extension world: {} {}".format(
+                        world, world.stage
+                    )
+                )
+                world.add_physics_callback("on_physics_step", self.on_physics_step)
+                self.subscription = None
+                return
+        except Exception as e:
+            print("[MotionKinematicsExtension] Extension world: {}".format(e))
+
+    def on_physics_step(self, step_size):
+        print("[MotionKinematicsExtension] Extension step: {}".format(step_size))
 
     def delta(self):
         print(
@@ -187,6 +202,9 @@ class MotionKinematicsExtension(omni.ext.IExt):
         return delta_p, delta_r
 
     def on_shutdown(self):
+
+        self.subscription = None
+
         async def g(self):
             if getattr(self, "server_task") and self.server_task:
                 self.server_task.cancel()
