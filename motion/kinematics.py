@@ -63,37 +63,39 @@ class MotionKinematicsExtension(omni.ext.IExt):
         self.kinematics_delta = None
 
     def on_startup(self, ext_id):
-        async def f(self):
+        async def g(self):
             context = omni.usd.get_context()
-            while context.get_stage() is None:
+            stage = context.get_stage()
+            while self.running and not stage:
                 print("[MotionKinematicsExtension] Extension world wait")
                 await asyncio.sleep(0.5)
-            print("[MotionKinematicsExtension] Extension world ready")
+                stage = context.get_stage()
+            if not stage:
+                return
+            print("[MotionKinematicsExtension] Extension world ready {}".format(stage))
 
-            stage = context.get_stage()
-            print("[MotionKinematicsExtension] Extension stage {}".format(stage))
+            prim = stage.GetPrimAtPath(self.config["articulation"])
+            while self.running and not articulation_prim.IsValid():
+                print("[MotionKinematicsExtension] Extension prim wait")
+                await asyncio.sleep(0.5)
+                prim = stage.GetPrimAtPath(self.config["articulation"])
+            if not prim.IsValid():
+                return
+            print("[MotionKinematicsExtension] Extension prim ready {}".format(prim))
 
-            if self.config["articulation"]:
-                self.articulation = Articulation(self.config["articulation"])
-                self.articulation.initialize()
-                # while not self.articulation.handles_initialized:
-                #    print("[MotionKinematicsExtension] Extension articulation wait")
-                #    await asyncio.sleep(1)
-
-                self.controller = self.articulation.get_articulation_controller()
-                self.solver = KinematicsSolver(
-                    self.articulation, self.config["effector"]
+            self.articulation = Articulation(self.config["articulation"])
+            self.articulation.initialize()
+            self.controller = self.articulation.get_articulation_controller()
+            self.solver = KinematicsSolver(self.articulation, self.config["effector"])
+            print(
+                "[MotionKinematicsExtension] Extension articulation {} ({}) {} {}".format(
+                    self.articulation,
+                    self.articulation.dof_names,
+                    self.controller,
+                    self.solver,
                 )
-                print(
-                    "[MotionKinematicsExtension] Extension articulation {} ({}) {} {}".format(
-                        self.articulation,
-                        self.articulation.dof_names,
-                        self.controller,
-                        self.solver,
-                    )
-                )
+            )
 
-        async def g(self):
             async def value_stream(self):
                 try:
                     while self.running:
@@ -181,7 +183,6 @@ class MotionKinematicsExtension(omni.ext.IExt):
 
         self.running = True
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(f(self))
         self.server_task = loop.create_task(g(self))
         print("[MotionKinematicsExtension] Extension startup")
 
