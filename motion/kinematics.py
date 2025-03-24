@@ -20,8 +20,8 @@ class MotionKinematicsExtension(omni.ext.IExt):
         super().__init__()
 
         self.config = {
-            "base": None,
             "effector": None,
+            "reference": None,
             "articulation": None,
             "server": "ws://localhost:8081",
             "subject": "subject.pose",
@@ -35,12 +35,13 @@ class MotionKinematicsExtension(omni.ext.IExt):
             print("[MotionKinematicsExtension] Extension config: {}".format(config))
             config = toml.load(config)
             print("[MotionKinematicsExtension] Extension config: {}".format(config))
-            self.config["base"] = (
-                config.get("base", self.config["base"]) or self.config["base"]
-            )
             self.config["effector"] = (
                 config.get("effector", self.config["effector"])
                 or self.config["effector"]
+            )
+            self.config["reference"] = (
+                config.get("reference", self.config["reference"])
+                or self.config["reference"]
             )
             self.config["articulation"] = (
                 config.get("articulation", self.config["articulation"])
@@ -55,56 +56,28 @@ class MotionKinematicsExtension(omni.ext.IExt):
         except Exception as e:
             print("[MotionKinematicsExtension] Extension config: {}".format(e))
 
-        assert self.config["base"]
-        assert self.config["effector"]
-        assert self.config["articulation"]
+        assert self.config[
+            "effector"
+        ], "[MotionKinematicsExtension] Extension config: no effector"
+        assert self.config[
+            "reference"
+        ], "[MotionKinematicsExtension] Extension config: no reference"
+        assert self.config[
+            "articulation"
+        ], "[MotionKinematicsExtension] Extension config: no articulation"
         print("[MotionKinematicsExtension] Extension config: {}".format(self.config))
-
-        self.kinematics_delta = None
 
     def on_startup(self, ext_id):
         async def g(self):
-            context = omni.usd.get_context()
-            stage = context.get_stage()
-            while self.running and not stage:
-                print("[MotionKinematicsExtension] Extension world wait")
-                await asyncio.sleep(0.5)
-                stage = context.get_stage()
-            if not stage:
-                return
-            print("[MotionKinematicsExtension] Extension world ready {}".format(stage))
-
-            prim = stage.GetPrimAtPath(self.config["articulation"])
-            while self.running and not articulation_prim.IsValid():
-                print("[MotionKinematicsExtension] Extension prim wait")
-                await asyncio.sleep(0.5)
-                prim = stage.GetPrimAtPath(self.config["articulation"])
-            if not prim.IsValid():
-                return
-            print("[MotionKinematicsExtension] Extension prim ready {}".format(prim))
-
-            self.articulation = Articulation(self.config["articulation"])
-            self.articulation.initialize()
-            self.controller = self.articulation.get_articulation_controller()
-            self.solver = KinematicsSolver(self.articulation, self.config["effector"])
-            print(
-                "[MotionKinematicsExtension] Extension articulation {} ({}) {} {}".format(
-                    self.articulation,
-                    self.articulation.dof_names,
-                    self.controller,
-                    self.solver,
-                )
-            )
-
             async def value_stream(self):
                 try:
-                    while self.running:
+                    while getattr(self, "running", True):
                         try:
                             async with websockets.connect(self.config["server"]) as ws:
                                 await ws.send(
                                     "SUB {} 1\r\n".format(self.config["subject"])
                                 )
-                                while self.running:
+                                while getattr(self, "running", True):
                                     try:
                                         response = await asyncio.wait_for(
                                             ws.recv(), timeout=1.0
@@ -179,8 +152,6 @@ class MotionKinematicsExtension(omni.ext.IExt):
                 )
                 self.kinematics_delta = value
 
-        self.kinematics_delta = None
-
         self.running = True
         loop = asyncio.get_event_loop()
         self.server_task = loop.create_task(g(self))
@@ -194,23 +165,57 @@ class MotionKinematicsExtension(omni.ext.IExt):
 
     def world_callback(self, e):
         try:
-            world = World.instance()
-            if world and world.stage:
-                print(
-                    "[MotionKinematicsExtension] Extension world: {} {}".format(
-                        world, world.stage
-                    )
-                )
-                if world.physics_callback_exists("on_physics_step"):
-                    world.remove_physics_callback("on_physics_step")
-                world.add_physics_callback("on_physics_step", self.on_physics_step)
-                self.subscription = None
+            print("[MotionKinematicsExtension] Extension world wait")
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
                 return
+            print("[MotionKinematicsExtension] Extension stage ready {}".format(stage))
+
+            world = World.instance()
+            if not world:
+                return
+            if not world.stage:
+                return
+            print(
+                "[MotionKinematicsExtension] Extension world: {} {}".format(
+                    world, world.stage
+                )
+            )
+
+            if not stage.GetPrimAtPath("/physicsScene").IsValid():
+                return
+            print("[MotionKinematicsExtension] Extension physics scene ready")
+
+            prim = stage.GetPrimAtPath(self.config["articulation"])
+            if not prim.IsValid():
+                return
+            print("[MotionKinematicsExtension] Extension prim ready {}".format(prim))
+
+            self.articulation = Articulation(self.config["articulation"])
+            self.articulation.initialize()
+            self.controller = self.articulation.get_articulation_controller()
+            self.solver = KinematicsSolver(self.articulation, self.config["effector"])
+            print(
+                "[MotionKinematicsExtension] Extension articulation ready {} ({}) {} {}".format(
+                    self.articulation,
+                    self.articulation.dof_names,
+                    self.controller,
+                    self.solver,
+                )
+            )
+
+            if world.physics_callback_exists("on_physics_step"):
+                world.remove_physics_callback("on_physics_step")
+            world.add_physics_callback("on_physics_step", self.on_physics_step)
+
+            if self.subscription:
+                self.subscription.unsubscribe()
+            self.subscription = None
         except Exception as e:
-            print("[MotionKinematicsExtension] Extension world: {}".format(e))
+            print("[MotionKinematicsExtension] Extension world exception {}".format(e))
 
     def on_physics_step(self, step_size):
-        delta, self.kinematics_delta = self.kinematics_delta, None
+        delta, self.kinematics_delta = getattr(self, "kinematics_delta", None), None
         if delta is not None:
             print(
                 "[MotionKinematicsExtension] Extension physics: {} {}".format(
@@ -219,7 +224,7 @@ class MotionKinematicsExtension(omni.ext.IExt):
             )
             delta_p, delta_o = delta
 
-            position, orientation = XFormPrim(self.config["base"]).get_world_pose()
+            position, orientation = XFormPrim(self.config["reference"]).get_world_pose()
             print(
                 "[MotionKinematicsExtension] Extension reference position/orientation: {} {}".format(
                     position, orientation
@@ -266,10 +271,9 @@ class MotionKinematicsExtension(omni.ext.IExt):
         return
 
     def on_shutdown(self):
-
+        if self.subscription:
+            self.subscription.unsubscribe()
         self.subscription = None
-
-        self.kinematics_delta = None
 
         async def g(self):
             if getattr(self, "server_task") and self.server_task:
