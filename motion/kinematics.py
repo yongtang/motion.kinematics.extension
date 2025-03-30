@@ -25,6 +25,7 @@ class MotionKinematicsExtension(omni.ext.IExt):
             "articulation": None,
             "server": "ws://localhost:8081",
             "subject": "subject.pose",
+            "token": None,
         }
 
         try:
@@ -53,6 +54,9 @@ class MotionKinematicsExtension(omni.ext.IExt):
             self.config["subject"] = (
                 config.get("subject", self.config["subject"]) or self.config["subject"]
             )
+            self.config["token"] = (
+                config.get("token", self.config["token"]) or self.config["token"]
+            )
         except Exception as e:
             print("[MotionKinematicsExtension] Extension config: {}".format(e))
 
@@ -73,7 +77,14 @@ class MotionKinematicsExtension(omni.ext.IExt):
                 try:
                     while getattr(self, "running", True):
                         try:
-                            async with websockets.connect(self.config["server"]) as ws:
+                            async with websockets.connect(
+                                self.config["server"],
+                                extra_headers={
+                                    "Authorization": "Bearer {}".format(
+                                        self.config["token"]
+                                    )
+                                },
+                            ) as ws:
                                 await ws.send(
                                     "SUB {} 1\r\n".format(self.config["subject"])
                                 )
