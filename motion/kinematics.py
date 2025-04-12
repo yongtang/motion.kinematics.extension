@@ -98,39 +98,40 @@ class MotionKinematicsExtension(omni.ext.IExt):
                                                 response
                                             )
                                         )
-                                        head, body = response.split(b"\r\n", 1)
-                                        if head.startswith(b"MSG "):
-                                            assert body.endswith(b"\r\n")
-                                            body = body[:-2]
+                                        for head, body in zip(
+                                            *[iter(response.split(b"\r\n"))] * 2
+                                        ):
+                                            if head.startswith(b"MSG "):
+                                                op, sub, sid, count = head.split(
+                                                    b" ", 3
+                                                )
+                                                assert op == b"MSG"
+                                                assert sub
+                                                assert sid
+                                                assert int(count) == len(body)
 
-                                            op, sub, sid, count = head.split(b" ", 3)
-                                            assert op == b"MSG"
-                                            assert sub
-                                            assert sid
-                                            assert int(count) == len(body)
-
-                                            pose = json.loads(body)
-                                            position = np.array(
-                                                (
-                                                    pose["position"]["x"],
-                                                    pose["position"]["y"],
-                                                    pose["position"]["z"],
+                                                pose = json.loads(body)
+                                                position = np.array(
+                                                    (
+                                                        pose["position"]["x"],
+                                                        pose["position"]["y"],
+                                                        pose["position"]["z"],
+                                                    )
                                                 )
-                                            )
-                                            orientation = np.array(
-                                                (
-                                                    pose["orientation"]["x"],
-                                                    pose["orientation"]["y"],
-                                                    pose["orientation"]["z"],
-                                                    pose["orientation"]["w"],
+                                                orientation = np.array(
+                                                    (
+                                                        pose["orientation"]["x"],
+                                                        pose["orientation"]["y"],
+                                                        pose["orientation"]["z"],
+                                                        pose["orientation"]["w"],
+                                                    )
                                                 )
-                                            )
-                                            print(
-                                                "[MotionKinematicsExtension] Extension server value: {}/{}".format(
-                                                    position, orientation
+                                                print(
+                                                    "[MotionKinematicsExtension] Extension server value: {}/{}".format(
+                                                        position, orientation
+                                                    )
                                                 )
-                                            )
-                                            yield position, orientation
+                                                yield position, orientation
 
                                     except asyncio.TimeoutError:
                                         pass
